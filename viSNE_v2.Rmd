@@ -1,0 +1,262 @@
+---
+title: "viSNE Report V2"
+author: "Jie Ping"
+date: "December, 2017"
+output: 
+  html_document: 
+    df_print: kable
+    theme: readable
+---
+
+<style>
+pre {
+  overflow-x: auto;
+}
+pre code {
+  word-wrap: normal;
+  white-space: pre;
+}
+</style>
+
+```{r global_options, include=FALSE, echo = FALSE}
+
+pacman::p_load(knitr, Hmisc, tableone, tsne, anytime, lubridate, randomForest, ggplot2, rpart)
+
+options(width = 2000)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      cache = FALSE, tidy = FALSE, size = "small")
+
+timeinternal <- function(dob, age.day = today(), units = "years", floor = TRUE) {
+  calc.age = new_interval(dob, age.day) / duration(num = 1, units = units)
+  if (floor)
+    return(as.integer(floor(calc.age)))
+  return(calc.age)
+}
+
+PCA_3 <- function(data, pch_point = 1, mar = c(4, 4, 4, 2), cex_point = 2, 
+                  cex_name = 2, main = "PCA", reverse = T, scale = T, 
+                  add_name = T, col_name = "red", col_point = "black" , 
+                  barplot = F, pos = NULL, cex.axis = 1.2, cex.main = 1.2, 
+                  cex.lab = 1.2, ...) {
+  if (barplot == T) {
+    op <- par(mfrow = c(2, 1), mar = .1 + c(2, 2, 2, 2))
+  }
+  if (reverse == T) {
+    data <- t(data)
+  }
+  result <- prcomp(data, scale = scale)
+  
+  par(mar = mar)
+  plot(result$x[, 1], result$x[, 2], type = "n",
+       xlab = paste("PC1 (", round(((result$sdev)^2/sum((result$sdev)^2))[1], 2)*100, "%)", sep = ""),
+       ylab = paste("PC2 (", round(((result$sdev)^2/sum((result$sdev)^2))[2], 2)*100, "%)", sep = ""),
+       main  =main, cex.axis = cex.axis, cex.main = cex.main, cex.lab = cex.lab, ...)
+  points(result$x[, 1], result$x[, 2], pch = pch_point, cex = cex_point, col = col_point)
+  
+  if (add_name == T) {
+    text(result$x[, 1], result$x[, 2], labels = rownames(result$x), 
+         cex = cex_name, col = col_name, pos = pos)
+  }    
+  
+  #abline(h=0,lty=3)
+  #abline(v=0,lty=3)
+  
+  if (barplot == T) {
+    barplot((result$sdev)^2/sum((result$sdev)^2), names = colnames(result$x), 
+            main = "Proportion of Variance")
+  }
+  
+  return (result)
+}
+
+setwd("Z:/JiePing/viSNE/")
+
+outcome_data <- read.csv("data/2017-12-06index_procedure_and_recurrence.csv")
+covariates_data <- read.csv("data/2017-12-06covariates_viSNE2.csv")
+
+viSNE_data <- merge(covariates_data, outcome_data, by.x = "Study.Patient.id", by.y = "Study.Patient.id", all.x = T, all.y = T)
+rownames(viSNE_data) <- viSNE_data$Study.Patient.id
+viSNE_data <- viSNE_data[, -1]
+
+```
+
+## Data Summary 
+### Simplest summary of covariants
+
+```{r simpleSummary, echo = FALSE, comment = ""}
+myVars <- c("indexAge", "Demographics.highestEducation", 
+            "race", "charlsonComorbid", "gelbardComorbid", "BIPQ.scorePRO", 
+            "CDQ.scorePRO", "EAT10.scorePRO", "FoPQ.coping.scorePRO", "FoPQ.anxiety.scorePRO", 
+            "MOS.scorePRO", "SDMQ9.scorePRO", "SF12v2.GH.scorePRO", "SF12v2.PF.scorePRO", 
+            "SF12v2.RP.scorePRO", "SF12v2.BP.scorePRO", "SF12v2.VI.scorePRO", 
+            "SF12v2.SF.scorePRO", "SF12v2.RE.scorePRO", "SF12v2.MH.scorePRO", 
+            "VHI10.scorePRO", "Labs.hsCRP", "DiseaseSpecificHistory.totalTreatments",
+            "refProvider", "refInstitution", "fellowship", "fellowship.site",
+            "procedureType", "recurrence")
+
+summ1 <- CreateTableOne(data = viSNE_data[,myVars], includeNA = T)
+print(summ1)
+
+```
+
+### Group summary by procedure type
+
+```{r gSpT, echo=FALSE, comment = "", warning=FALSE, tidy=TRUE}
+
+summ2 <- CreateTableOne(data = viSNE_data[,myVars], includeNA = T, strata = "procedureType")
+print(summ2)
+
+```
+
+### Group summary by recurrence status
+
+```{r gsrs, echo=FALSE, comment = "", warning=FALSE, tidy=TRUE}
+
+summ3 <- CreateTableOne(data = viSNE_data[,myVars], includeNA = T, strata = "recurrence")
+print(summ3)
+
+```
+
+### Group summary by demographics highest education
+
+```{r gsEd, echo=FALSE, comment = "", warning=FALSE, tidy=TRUE}
+
+summ4 <- CreateTableOne(data = viSNE_data[,myVars], includeNA = T, strata = "Demographics.highestEducation")
+print(summ4)
+
+```
+
+## tSNE Classification
+
+### tSNE without data imputation
+
+```{r tsne1, echo=FALSE, comment = "", warning=FALSE, tidy=TRUE}
+for_tsne_vars <- c("indexAge", "charlsonComorbid", "gelbardComorbid", "BIPQ.scorePRO", 
+               "CDQ.scorePRO", "EAT10.scorePRO", "FoPQ.coping.scorePRO", "FoPQ.anxiety.scorePRO", 
+               "MOS.scorePRO", "SDMQ9.scorePRO", "SF12v2.GH.scorePRO", "SF12v2.PF.scorePRO", 
+               "SF12v2.RP.scorePRO", "SF12v2.BP.scorePRO", "SF12v2.VI.scorePRO", 
+               "SF12v2.SF.scorePRO", "SF12v2.RE.scorePRO", "SF12v2.MH.scorePRO", 
+               "VHI10.scorePRO", "Labs.hsCRP", "DiseaseSpecificHistory.totalTreatments", 
+               "procedureType", "recurrence", "Demographics.highestEducation", "refInstitution")
+
+for_tsne_data <- viSNE_data[, for_tsne_vars]
+for_tsne_completedata <- for_tsne_data[complete.cases(for_tsne_data), ]
+
+tsne_completecase <- tsne(for_tsne_completedata[, 1:21], perplexity = 50)
+
+ggplot(as.data.frame(tsne_completecase), aes(x = V1, y = V2, color = for_tsne_completedata$procedureType)) + 
+  geom_point(cex = 2) + scale_colour_manual(name = "procedureType", values = rainbow(length(unique(for_tsne_completedata$procedureType)))) + 
+  ggtitle("tSNE of procedure type with only original data") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(as.data.frame(tsne_completecase), aes(x = V1, y = V2, color = for_tsne_completedata$recurrence)) + 
+  geom_point(cex = 2) + scale_colour_manual(name = "recurrence", values = rainbow(length(unique(for_tsne_completedata$recurrence)))) + 
+  ggtitle("tSNE of recurrence type with only original data") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(as.data.frame(tsne_completecase), aes(x = V1, y = V2, color = for_tsne_completedata$Demographics.highestEducation)) + 
+  geom_point(cex = 2) + scale_colour_manual(name = "Highest Education", values = rainbow(length(unique(for_tsne_completedata$Demographics.highestEducation)))) + 
+  ggtitle("tSNE of education type with only original data") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot(as.data.frame(tsne_completecase), aes(x = V1, y = V2, color = for_tsne_completedata$refInstitution)) + 
+  geom_point(cex = 2) + scale_colour_manual(name = "Institution", values = rainbow(length(unique(for_tsne_completedata$refInstitution)))) + 
+  ggtitle("tSNE of Institution with only original data") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+### tSNE with imputed data
+
+```{r impute, echo=FALSE, message = FALSE, warning=FALSE, include=FALSE}
+
+endo_trac_procedure_data <- subset(for_tsne_data, procedureType %in% c("Endoscopic procedure", "Tracheal resection"))
+
+imputef <- as.formula(paste("~", paste(for_tsne_vars[1:21], collapse = " + ")))
+
+q1impute_withage <- aregImpute(imputef, data = endo_trac_procedure_data, n.impute = 10, nk = 0)
+
+q1impute_withage_n1 <- impute.transcan(q1impute_withage, imputation = 1, list.out = T, data = endo_trac_procedure_data)
+
+q1impute_withage_n1 <- as.data.frame(q1impute_withage_n1)
+
+rownames(q1impute_withage_n1) <- rownames(endo_trac_procedure_data)
+
+q1impute_withage_n1 <- cbind(q1impute_withage_n1, endo_trac_procedure_data[, 22:25])
+
+tsne_impute <- tsne(q1impute_withage_n1[, 1:21], perplexity = 50)
+```
+
+```{r imputeplot, echo=FALSE, comment = "", warning=FALSE, tidy=TRUE}
+imputed_procedure_tsne_plot <- ggplot(as.data.frame(tsne_impute), aes(x = V1, y = V2, color = q1impute_withage_n1$procedureType)) + 
+  geom_point(cex = 2) + scale_colour_manual(name = "procedureType", values = rainbow(length(unique(q1impute_withage_n1$procedureType)))) + 
+  ggtitle("tSNE of procedure type with imputed data") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+imputed_recurrence_tsne_plot <- ggplot(as.data.frame(tsne_impute), aes(x = V1, y = V2, color = q1impute_withage_n1$recurrence)) + 
+  geom_point(cex = 2) + scale_colour_manual(name = "recurrence", values = rainbow(length(unique(q1impute_withage_n1$recurrence)))) + 
+  ggtitle("tSNE of recurrence type with imputed data") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+imputed_education_tsne_plot <- ggplot(as.data.frame(tsne_impute), aes(x = V1, y = V2, color = q1impute_withage_n1$Demographics.highestEducation)) + 
+  geom_point(cex = 2) + scale_colour_manual(name = "Highest Education", values = rainbow(length(unique(q1impute_withage_n1$Demographics.highestEducation)))) + 
+  ggtitle("tSNE of education with imputed data") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+imputed_institution_tsne_plot <- ggplot(as.data.frame(tsne_impute), aes(x = V1, y = V2, color = q1impute_withage_n1$refInstitution)) + 
+  geom_point(cex = 2) + scale_colour_manual(name = "Institution", values = rainbow(length(unique(q1impute_withage_n1$refInstitution)))) + 
+  ggtitle("tSNE of institution with imputed data") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+imputed_procedure_tsne_plot
+imputed_recurrence_tsne_plot
+imputed_education_tsne_plot
+imputed_institution_tsne_plot
+
+jpeg(filename = "tsne2_imputed_institution.jpg", width = 3200, height = 1600, units = "px", pointsize = 8, quality = 100, bg = "white", res = 300)
+imputed_institution_tsne_plot
+dev.off()
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
